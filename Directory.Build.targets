@@ -1,0 +1,94 @@
+<Project>
+<PropertyGroup>
+		<ReplacePackageReferences Condition="'$(ReplacePackageReferences)' == ''">true</ReplacePackageReferences>
+		<ReplaceProjectReferences Condition="'$(ReplaceProjectReferences)' == ''">true</ReplaceProjectReferences>
+	</PropertyGroup>
+	<Choose>
+		<When Condition="'$(SolutionPath)' != '' AND '$(SolutionPath)' != '*undefined*' AND Exists('$(SolutionPath)')">
+			<PropertyGroup>
+				<SolutionFileContent>$([System.IO.File]::ReadAllText($(SolutionPath)))</SolutionFileContent>
+				<SmartSolutionDir>$([System.IO.Path]::GetDirectoryName( $(SolutionPath) ))</SmartSolutionDir>
+				<RegexPattern>(?&lt;="[PackageName]", ")(.*)(?=", ")</RegexPattern>
+				<HasSolution>true</HasSolution>
+			</PropertyGroup>
+		</When>
+		<Otherwise>
+			<PropertyGroup>
+				<HasSolution>false</HasSolution>
+			</PropertyGroup>
+		</Otherwise>
+	</Choose>
+	<Choose>
+		<When Condition="$(ReplacePackageReferences) AND $(HasSolution)">
+			<ItemGroup>
+
+				<!-- Keep the identity of the  packagereference -->
+				<SmartPackageReference Include="@(PackageReference)">
+					<InProject>false</InProject>
+					<PackageName>%(Identity)</PackageName>
+					<InSolution>$(SolutionFileContent.Contains('\%(Identity).csproj'))</InSolution>
+				</SmartPackageReference>
+
+				<!-- Filter them by mapping them to another itemGroup using the WithMetadataValue item function -->
+				<PackageInSolution Include="@(SmartPackageReference -> WithMetadataValue('InSolution', True) )">
+					<Pattern>$(RegexPattern.Replace('[PackageName]','%(PackageName)') )</Pattern>
+					<SmartPath>$([System.Text.RegularExpressions.Regex]::Match( '$(SolutionFileContent)', '%(Pattern)' ))</SmartPath>
+					<ProjectName>'%(PackageName)'</ProjectName>
+				</PackageInSolution>
+
+				<ProjectReference Include="@(PackageInSolution -> '$(SmartSolutionDir)\%(SmartPath)' )">
+					<Name>@(PackageInSolution -> %(ProjectName))</Name>
+				</ProjectReference>
+				
+				<!-- Remove the package references that are now referenced as projects -->
+				<PackageReference Remove="@(PackageInSolution -> '%(PackageName)' )" />
+			</ItemGroup>
+		</When>
+		<When Condition="$(ReplaceProjectReferences) AND '$(_RestoreSolutionFileUsed)' == ''">
+			<ItemGroup>
+
+				<!-- Keep the identity of the  project reference (relative path), determine the project name and whether the project is contained in the current solution -->
+				<SmartProjectReference Include="@(ProjectReference)">
+					<OriginalIdentity>%(Identity)</OriginalIdentity>
+					<ProjectName>$([System.IO.Path]::GetFileNameWithoutExtension( $([System.IO.Path]::GetFullPath( '%(OriginalIdentity)' )) ))</ProjectName>
+					<InSolution>$(SolutionFileContent.Contains('\%(ProjectName).csproj'))</InSolution>
+				</SmartProjectReference>
+
+				<!-- Filter them by mapping them to another itemGroup using the WithMetadataValue item function -->
+				<ProjectNotInSolution Include="@(SmartProjectReference -&gt; WithMetadataValue('InSolution', False) )">
+				</ProjectNotInSolution>
+
+				<!--Reference the latest version of the package (why not * ? > see https://github.com/NuGet/Home/issues/7328-->
+				<PackageReference Include="@(ProjectNotInSolution -> '%(ProjectName)' )" Version="[*,9999.0]" />
+
+				<!-- Remove the project references that are now referenced as packages -->
+				<ProjectReference Remove="@(ProjectNotInSolution -> '%(OriginalIdentity)' )" />
+			</ItemGroup>
+		</When>
+	</Choose>
+
+  <!-- Change AssemblyInfo.cs AssemblyVersion with date/time and increment revision daily by one in Visual Studio 2022 -->
+  <Target Name="AssemblyVersion" BeforeTargets="CoreCompile" DependsOnTargets="PrepareForBuild">
+    <PropertyGroup>
+      <!-- Define Constants -->
+      <AssemblyInfo>$(ProjectDir)\Properties\AssemblyInfo.cs</AssemblyInfo>
+      <AssemblyInfoContent>$([System.IO.File]::ReadAllText($(AssemblyInfo)))</AssemblyInfoContent>
+      <VersionRegex>(\[\s*assembly\s*:\s*AssemblyVersion\(\s*"(\d+)\.(\d+)\.(\d+)(\.)(\d+)("\)\s*\]))</VersionRegex>
+      <BuildAndRevisionRegex>(\d+\.\d+")</BuildAndRevisionRegex>
+      <!-- Parse Build and Revision from AssemblyInfo-->
+      <AssemblyVersion>$([System.Text.RegularExpressions.Regex]::Match('$(AssemblyInfoContent)', '$(VersionRegex)'))</AssemblyVersion>
+      <BuildAndRevision>$([System.Text.RegularExpressions.Regex]::Match('$(AssemblyVersion)', '$(BuildAndRevisionRegex)'))</BuildAndRevision>
+      <BuildAndRevision>$(BuildAndRevision.Remove($(BuildAndRevision.LastIndexOf('"')), 1))</BuildAndRevision>
+      <!-- Generate Build and Revision from AssemblyVersion -->
+      <Build>$(BuildAndRevision.SubString(0, $(BuildAndRevision.LastIndexOf('.'))))</Build>
+      <Revision>$(BuildAndRevision.SubString($([MSBuild]::Add($(BuildAndRevision.LastIndexOf('.')), 1))))</Revision>
+      <!-- Increment Revision by one if Build equal Current Day otherwise start from one as new Day Build-->
+      <Revision Condition="$([System.DateTime]::Now.Day) == $(Build)">$([MSBuild]::Add($(Revision), 1))</Revision>
+      <Revision Condition="$([System.DateTime]::Now.Day) != $(Build)">1</Revision>
+      <!-- New AssemblyVersion Block -->
+      <AssemblyVersion>[assembly: AssemblyVersion("$([System.DateTime]::Now.ToString("yyyy.M.d.$(Revision)"))")]</AssemblyVersion>
+    </PropertyGroup>
+    <!-- Write New AssemblyVersion Block to AssemblyInfo.cs file -->
+    <WriteLinesToFile File="$(AssemblyInfo)" Lines="$([System.Text.RegularExpressions.Regex]::Replace($(AssemblyInfoContent), $(VersionRegex), $(AssemblyVersion)))" Overwrite="true" />
+  </Target>
+</Project>
